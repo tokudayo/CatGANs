@@ -74,16 +74,6 @@ class Generator(nn.Module):
         return self.net(x)
 
 
-def initialize_weights(model):
-    # Initializes weights according to the DCGAN paper
-    for m in model.modules():
-        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.BatchNorm2d)):
-            nn.init.normal_(m.weight.data, 0.0, 0.02)
-
-    def forward(self, input):
-        return self.main(input)
-
-
 def gradient_penalty(critic, real, fake, device="cuda"):
     BATCH_SIZE, C, H, W = real.shape
     alpha = torch.rand((BATCH_SIZE, 1, 1, 1)).repeat(1, C, H, W).to(device)
@@ -149,73 +139,40 @@ class WGANGP(nn.Module):
 
         iters = 0
         for epoch in range(NUM_EPOCHS):
-            # For each batch in the dataloader
-            
-            for _, (real, _) in enumerate(dataloader, 0):
+            for _, (real, _) in enumerate(dataloader):
                 iters += 1
                 real = real.to(device)
-                noise = torch.randn(BATCH_SIZE, LATENT_DIM, 1, 1, device=device)
-                fake = gen(noise)
+                cur_batch_size = real.shape[0]
 
-                if iters % (CRITIC_ITERS + 1) != 0:    
+                # Critic: max E[critic(real)] - E[critic(fake)]
+                for _ in range(CRITIC_ITERS):
+                    noise = torch.randn((cur_batch_size, LATENT_DIM, 1, 1), device=device)
+                    fake = gen(noise)
                     critic_real = critic(real).reshape(-1)
                     critic_fake = critic(fake).reshape(-1)
                     gp = gradient_penalty(critic, real, fake)
-                    # Critic: Maximize E[C(real)] - E[C(fake)]
-                    lossC = -(torch.mean(critic_real) - torch.mean(critic_fake)) + LAMBDA_GP*gp
-                    optC.zero_grad()
-                    lossC.backward()
+                    loss_critic = -(torch.mean(critic_real) - torch.mean(critic_fake)) + LAMBDA_GP*gp
+                    critic.zero_grad()
+                    loss_critic.backward()
                     optC.step()
-                else:
-                    critic_fake = critic(fake).reshape(-1)
-                    # Generator: Minimize - E[C(fake)]
-                    lossG = -(torch.mean(critic_fake))
-                    optG.zero_grad()
-                    lossG.backward()
-                    optG.step()
 
-                if iters%500 == 0 or (iters < 1000 and iters%10==0):
+                # Generator: max E[critic(fake)]
+                fake = gen(noise)
+                critic_fake = critic(fake).reshape(-1)
+                loss_gen = -torch.mean(critic_fake)
+                gen.zero_grad()
+                loss_gen.backward()
+                optG.step()
+
+                if iters%500 == 0 or (iters < 1000 and iters%100==0):
                     gen.eval()
-                    visualize(netG(fixed_noise), f'{OUTPATH}/visual/{iters}.jpg')
+                    visualize(gen(fixed_noise), f'{OUTPATH}/visual/{iters}.jpg')
                     gen.train()
-                
-        # for epoch in range(NUM_EPOCHS):
-        #     # Target labels not needed! <3 unsupervised
-        #     for batch_idx, (real, _) in enumerate(dataloader):
-        #         iters += 1
-        #         real = real.to(device)
-        #         cur_batch_size = real.shape[0]
 
-        #         # Train Critic: max E[critic(real)] - E[critic(fake)]
-        #         # equivalent to minimizing the negative of that
-        #         for _ in range(CRITIC_ITERS):
-        #             noise = torch.randn(cur_batch_size, LATENT_DIM, 1, 1).to(device)
-        #             fake = gen(noise)
-        #             critic_real = critic(real).reshape(-1)
-        #             critic_fake = critic(fake).reshape(-1)
-        #             gp = gradient_penalty(critic, real, fake)
-        #             loss_critic = (
-        #                 -(torch.mean(critic_real) - torch.mean(critic_fake)) + LAMBDA_GP * gp
-        #             )
-        #             critic.zero_grad()
-        #             loss_critic.backward(retain_graph=True)
-        #             optC.step()
-
-        #         # Train Generator: max E[critic(gen_fake)] <-> min -E[critic(gen_fake)]
-        #         gen_fake = critic(fake).reshape(-1)
-        #         loss_gen = -torch.mean(gen_fake)
-        #         gen.zero_grad()
-        #         loss_gen.backward()
-        #         optG.step()
-        #         if iters%500 == 0 or (iters < 1000 and iters%100==0):
-        #             gen.eval()
-        #             visualize(gen(fixed_noise), f'{OUTPATH}/visual/{iters}.jpg')
-        #             gen.train()
-
-        state = {
-            'G': gen.state_dict(),
-            'D': critic.state_dict(),
-            'opG': optG.state_dict(),
-            'opC': optC.state_dict()
-        }
-        torch.save(state, 'state.pt')
+            state = {
+                'G': gen.state_dict(),
+                'D': critic.state_dict(),
+                'opG': optG.state_dict(),
+                'opC': optC.state_dict()
+            }
+            torch.save(state, 'state.pt')
