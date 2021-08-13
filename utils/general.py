@@ -6,8 +6,9 @@ from torchvision.utils import make_grid
 def mkdirs(path):
     try:
         os.makedirs(path)
+        return True
     except:
-        pass
+        return False
 
 def visualize(batch64, savepath=None):
     if matplotlib.rcParams['backend'].lower() != 'agg': matplotlib.use('agg')

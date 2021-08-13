@@ -1,21 +1,9 @@
-import matplotlib, random
 import torch
 import torch.nn as nn
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as T
 from torch.optim import Adam
-import numpy as np
-from matplotlib import pyplot as plt
-import torchvision.utils as vutils
-
-def visualize(batch, save=None):
-    plt.figure(figsize=(8,8))
-    plt.axis("off")
-    plt.imshow(np.transpose(vutils.make_grid(batch, padding=2, normalize=True).cpu(),(1,2,0)))
-    if save is None: plt.show()
-    if save is not None:
-        plt.savefig(save)
-    plt.close()
+from utils.general import *
 
 class Critic(nn.Module):
     def __init__(self, channels_img, features_d):
@@ -101,44 +89,66 @@ class WGANGP(nn.Module):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.gen = Generator(100, 3, 64).to(device)
         self.critic = Critic(3, 64).to(device)
-        # initialize_weights(self.gen)
-        # initialize_weights(self.critic)
 
-    def train(self, OUTPATH):
-        critic = self.critic
-        gen = self.gen
-
+    def train(self, config):
+        # Device
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        LATENT_DIM = 100
-        CRITIC_ITERS = 5
-        BATCH_SIZE = 64
-        NUM_EPOCHS = 200
-        LR = 0.0001
-        LAMBDA_GP = 10
-        DATAPATH = 'D:\\repos\\NekoNet\\data\\cropped224'
+        # Load config
+        conf = load_yaml(config)
+        LATENT_DIM = conf['latent_dim']
+        CRITIC_ITERS = conf['critic_iters']
+        BATCH_SIZE = conf['batch_size']
+        NUM_EPOCHS = conf['num_epochs']
+        LR = conf['lr']
+        LAMBDA_GP = conf['lambda_gp']
+        DATAPATH = conf['datapath']
+        OUTPATH = conf['outpath']
 
 
-        fixed_noise = torch.randn(64, LATENT_DIM, 1, 1, device=device)
-        visualize(gen(fixed_noise), f'{OUTPATH}/visual/92.jpg')
+        critic = self.critic
+        gen = self.gen
+        optC = Adam(critic.parameters(), LR, betas=(0, 0.9))
+        optG = Adam(gen.parameters(), LR, betas=(0, 0.9))
+        iters = 0
+        epoch = 0
+        # Check existing training info
+        if not mkdirs(OUTPATH):
+            # Load existing model
+            try:
+                fixed_noise = torch.load(os.path.join(OUTPATH, 'noise.pt'))
+                mkdirs(os.path.join(OUTPATH, 'visual/'))
+                state = torch.load(os.path.join(OUTPATH, 'state.pt'))
+                print("ok")
+                critic.load_state_dict(state['critic'])
+                gen.load_state_dict(state['gen'])
+                print("ok2")
+                optC.load_state_dict(state['opC'])
+                optG.load_state_dict(state['opG'])
+                print("ok2")
+                iters = state['iters']
+                epoch = state['epoch']
+                print("Loaded previous training state")
+            except:
+                pass
+        else:
+            fixed_noise = torch.randn(64, LATENT_DIM, 1, 1, device=device)
+            torch.save(fixed_noise, os.path.join(OUTPATH, 'noise.pt'))
 
+
+        # Dataset and loader
         dataset = ImageFolder(root=DATAPATH,
                             transform=T.Compose([
                             T.Resize((64, 64)),
                             T.ToTensor(),
                             T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                             ]))
-        # Create the dataloader
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE,
                                                 shuffle=True, num_workers=2)
 
-        # Setup Adam optimizers for both G and D
-        optC = Adam(critic.parameters(), LR, betas=(0, 0.9))
-        optG = Adam(gen.parameters(), LR, betas=(0, 0.9))
-
-
-        iters = 0
-        for epoch in range(NUM_EPOCHS):
+        # Training loop
+        for ep in range(epoch + 1, NUM_EPOCHS + 1):
+            print(f'Epoch {ep}')
             for _, (real, _) in enumerate(dataloader):
                 iters += 1
                 real = real.to(device)
@@ -151,7 +161,7 @@ class WGANGP(nn.Module):
                     critic_real = critic(real).reshape(-1)
                     critic_fake = critic(fake).reshape(-1)
                     gp = gradient_penalty(critic, real, fake)
-                    loss_critic = -(torch.mean(critic_real) - torch.mean(critic_fake)) + LAMBDA_GP*gp
+                    loss_critic = torch.mean(critic_fake) - torch.mean(critic_real)+ LAMBDA_GP*gp
                     critic.zero_grad()
                     loss_critic.backward()
                     optC.step()
@@ -164,15 +174,19 @@ class WGANGP(nn.Module):
                 loss_gen.backward()
                 optG.step()
 
-                if iters%500 == 0 or (iters < 1000 and iters%100==0):
+                if iters%500 == 0 or (iters < 1000 and iters%10==0):
                     gen.eval()
-                    visualize(gen(fixed_noise), f'{OUTPATH}/visual/{iters}.jpg')
+                    visualize(gen(fixed_noise), os.path.join(OUTPATH, f'visual/{iters}.jpg'))
                     gen.train()
+                
+                print(-loss_critic, torch.mean(critic_real)-  torch.mean(critic_fake))
 
             state = {
-                'G': gen.state_dict(),
-                'D': critic.state_dict(),
+                'gen': gen.state_dict(),
+                'critic': critic.state_dict(),
                 'opG': optG.state_dict(),
-                'opC': optC.state_dict()
+                'opC': optC.state_dict(),
+                'epoch': ep,
+                'iters': iters,
             }
-            torch.save(state, 'state.pt')
+            torch.save(state, os.path.join(OUTPATH, 'state.pt'))

@@ -1,0 +1,11 @@
+---
+  latent_dim: 100
+  critic_iters: 5
+  batch_size: 64
+  num_epochs: 200
+
+  lr: 0.0001
+  lambda_gp: 10
+
+  datapath: D:\repos\MLScripts\shit
+  outpath: exp/run-1/
